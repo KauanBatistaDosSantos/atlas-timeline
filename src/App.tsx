@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useEffect, useState } from "react";
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
-import { Save, Plus, Search, Pin, PinOff, ZoomIn, ZoomOut, Download, Cog, Image as ImageIcon, X, Maximize2, Minimize2, Eye, Expand, Shrink } from "lucide-react";
+import { Save, Plus, Search, Pin, PinOff, ZoomIn, ZoomOut, Download, Cog, Image as ImageIcon, X, Maximize2, Minimize2, Eye, Expand, Shrink, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -43,7 +43,10 @@ type Note = {
   pinned?: boolean;
   weight?: number;
   createdAt: number;
+  tags?: string[];
 };
+
+type LayoutMode = "ALTERNATE" | "LEFT" | "RIGHT" | "HORIZONTAL";
 
 // ------------------ Colors & Shapes ------------------
 const levelStyles: Record<Level, { color: string; marker: (props: any) => JSX.Element; label: string }> = {
@@ -93,15 +96,19 @@ const levelStyles: Record<Level, { color: string; marker: (props: any) => JSX.El
 interface TLState {
   notes: Note[];
   calendar: AtlasCalendar;
-  zoom: Level; // current zoom granularity
+  zoom: Level;
   search: string;
+  filters: string[];
   addNote: (n: Omit<Note, "id"|"createdAt">) => void;
   togglePin: (id: string) => void;
   updateCalendar: (c: Partial<AtlasCalendar>) => void;
   setZoom: (z: Level) => void;
   setSearch: (q: string) => void;
+  setFilters: (f: string[]) => void;
   removeNote: (id: string) => void;
   load: () => void;
+  layout: LayoutMode;
+  setLayout: (m: LayoutMode) => void;
 }
 
 const defaultCalendar: AtlasCalendar = {
@@ -121,6 +128,9 @@ const useTL = create<TLState>((set, get) => ({
   calendar: defaultCalendar,
   zoom: "YEAR",
   search: "",
+  filters: [],
+  layout: "ALTERNATE",
+  setLayout: (m) => set({ layout: m }),
   addNote: (n) => set((s) => {
     const newNote: Note = { id: uuid(), createdAt: Date.now(), ...n };
     const notes = [...s.notes, newNote];
@@ -144,22 +154,49 @@ const useTL = create<TLState>((set, get) => ({
   }),
   setZoom: (z) => set({ zoom: z }),
   setSearch: (q) => set({ search: q }),
-load: () => {
-  try {
-    let notes = JSON.parse(localStorage.getItem("atlas_timeline_notes") || "[]");
-    // Normaliza notas antigas: se não tiver relativeEra, define AU se ano < 0
-    notes = notes.map((n: Note) => ({
-      ...n,
-      date: {
-        ...n.date,
-        relativeEra: n.date.relativeEra || (n.date.year < 0 ? "AU" : "DU"),
-      },
-    }));
-    const calendar = JSON.parse(localStorage.getItem("atlas_timeline_calendar") || "null") || defaultCalendar;
-    set({ notes, calendar });
-  } catch {}
-},
+  setFilters: (f) => set({ filters: f }),
+  load: () => {
+    try {
+      let notes = JSON.parse(localStorage.getItem("atlas_timeline_notes") || "[]");
+      notes = notes.map((n: Note) => ({
+        ...n,
+        date: {
+          ...n.date,
+          relativeEra: n.date.relativeEra || (n.date.year < 0 ? "AU" : "DU"),
+        },
+      }));
+      const calendar = JSON.parse(localStorage.getItem("atlas_timeline_calendar") || "null") || defaultCalendar;
+      set({ notes, calendar });
+    } catch {}
+  },
 }));
+
+// ------------------ Filters UI ------------------
+function FilterBox(){
+  const { filters, setFilters, notes } = useTL();
+  const [open, setOpen] = useState(false);
+  const allTags = Array.from(new Set(notes.flatMap(n=>n.tags||[])));
+
+  function toggleTag(tag: string){
+    if(filters.includes(tag)) setFilters(filters.filter(f=>f!==tag));
+    else setFilters([...filters, tag]);
+  }
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" className="flex items-center gap-2"><Filter size={16}/>Filtros</Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {allTags.length ? allTags.map(tag=>(
+          <DropdownMenuItem key={tag} onClick={()=>toggleTag(tag)}>
+            <span className={filters.includes(tag)?"font-bold text-blue-600":""}>{tag}</span>
+          </DropdownMenuItem>
+        )): <div className="px-2 py-1 text-xs text-muted-foreground">(sem tags)</div>}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 // ------------------ Helpers ------------------
 function formatAtlasDate(d: AtlasDate, cal: AtlasCalendar, level: Level) {
@@ -218,49 +255,9 @@ function ImagePreview({ src, alt }:{ src:string, alt?:string }){
   );
 }
 
-function formatFullAtlasDate(d: AtlasDate, cal: AtlasCalendar){
-  const parts: string[] = [];
-  if (d.era) parts.push(`Era: ${d.era}`);
-  if (d.millennium != null) parts.push(`${d.millennium}º milênio`);
-  if (d.century != null) parts.push(`Século ${d.century} (${toRoman(d.century)})`);
-  if (d.decade != null) parts.push(`Década de ${d.decade}`);
-  if (d.year != null) parts.push(`Ano ${d.year}`);
-  if (d.month != null && d.day != null) {
-    const monthName = cal.months[d.month-1]?.name ?? `M${d.month}`;
-    parts.push(`${d.day} de ${monthName}`);
-  } else if (d.month != null) {
-    const monthName = cal.months[d.month-1]?.name ?? `M${d.month}`;
-    parts.push(monthName);
-  } else if (d.day != null) {
-    parts.push(`Dia ${d.day}`);
-  }
-  return parts.join(" • ");
-}
-
-function groupKeyByLevel(n: Note, level: Level) {
-  const { date } = n;
-  switch (level) {
-    case "ERA": return date.era || "(Sem Era)";
-    case "MILLENNIUM": return `${date.era || "?"}::${date.millennium ?? "?"}`;
-    case "CENTURY": return `${date.era || "?"}::${date.millennium ?? "?"}::${date.century ?? "?"}`;
-    case "DECADE": return `${date.era || "?"}::${date.millennium ?? "?"}::${date.century ?? "?"}::${date.decade ?? "?"}`;
-    case "YEAR": return `${date.era || "?"}::${date.millennium ?? "?"}::${date.century ?? "?"}::${date.decade ?? "?"}::${date.year ?? "?"}`;
-  }
-}
-
-function download(filename: string, text: string) {
-  const el = document.createElement('a');
-  el.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
-  el.setAttribute('download', filename);
-  el.style.display = 'none';
-  document.body.appendChild(el);
-  el.click();
-  document.body.removeChild(el);
-}
-
 // ------------------ Components ------------------
 function Toolbar() {
-  const { zoom, setZoom, setSearch, notes } = useTL();
+  const { zoom, setZoom, setSearch, notes, layout, setLayout } = useTL();
   const [query, setQuery] = useState("");
 
   const pinnedCount = notes.filter(n => n.pinned).length;
@@ -268,7 +265,6 @@ function Toolbar() {
   return (
     <div className="sticky top-0 z-50 backdrop-blur bg-background/70 border-b w-full">
       <div className="max-w-6xl mx-auto flex flex-col items-center gap-2 p-2">
-        {/* Cabeçalho estilizado */}
         <h1 className="text-3xl font-extrabold text-center tracking-wide mb-2 bg-gradient-to-r from-purple-500 via-pink-500 to-blue-500 bg-clip-text text-transparent">
           Linha do Tempo de Atlas
         </h1>
@@ -285,7 +281,23 @@ function Toolbar() {
             </DropdownMenuContent>
           </DropdownMenu>
 
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="flex items-center gap-2">
+                <Cog size={16}/> Layout: {layout === "ALTERNATE" ? "Alternado" : layout === "LEFT" ? "Esquerda" : layout === "RIGHT" ? "Direita" : "Horizontal"}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setLayout("ALTERNATE")}>Alternado</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setLayout("LEFT")}>Tudo à esquerda</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setLayout("RIGHT")}>Tudo à direita</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setLayout("HORIZONTAL")}>Horizontal</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <SearchBox value={query} onChange={setQuery} onSearch={() => setSearch(query)} />
+
+          <FilterBox />
 
           <AddNoteDialog />
 
@@ -309,7 +321,67 @@ function SearchBox({ value, onChange, onSearch }:{ value:string, onChange:(v:str
   );
 }
 
-function downloadTXT(filename: string, text: string) {
+// ===== EXPORTAÇÃO =====
+type GroupLevel = "NONE" | "ERA" | "MILLENNIUM" | "CENTURY" | "DECADE";
+
+type ExportOptions = {
+  includeDescription?: boolean; // padrão: true
+  includeTags?: boolean;        // padrão: false
+  includeImages?: boolean;      // (não usado em TXT/DOCX — mantido p/ futuro)
+  groupBy: GroupLevel;          // padrão: "NONE"
+};
+
+function buildExportText(notes: Note[], calendar: AtlasCalendar, opts: ExportOptions): string {
+  const order = [...notes].sort(compareDates);
+
+  const formatNote = (n: Note) => {
+    // 1) Data (sem "Ano"), com "a.U." somente quando AU
+    const lines: string[] = [formatAtlasDate(n.date, calendar, "YEAR")];
+
+    // 2) Título
+    if (n.title) lines.push(n.title);
+
+    // 3) Descrição (se habilitado)
+    if (opts.includeDescription !== false && n.description) lines.push(n.description);
+
+    // 4) Tags (opcional)
+    if (opts.includeTags && n.tags?.length) lines.push("Tags: " + n.tags.join(", "));
+
+    return lines.join("\n");
+  };
+
+  if (opts.groupBy === "NONE") {
+    return order.map(formatNote).join("\n\n");
+  }
+
+  // Agrupamento por nível escolhido
+  const keyOf = (n: Note): string => {
+    switch (opts.groupBy) {
+      case "ERA":        return n.date.era || "Sem Era";
+      case "MILLENNIUM": return formatAtlasDate(n.date, calendar, "MILLENNIUM") || "Milênio ?";
+      case "CENTURY":    return formatAtlasDate(n.date, calendar, "CENTURY") || "Século ?";
+      case "DECADE":     return formatAtlasDate(n.date, calendar, "DECADE") || "Década ?";
+    }
+  };
+
+  const groups = new Map<string, Note[]>();
+  for (const n of order) {
+    const k = keyOf(n);
+    groups.set(k, [...(groups.get(k) || []), n]);
+  }
+
+  return Array.from(groups.entries())
+    .map(([k, arr]) => `${k}\n` + arr.map(formatNote).join("\n\n"))
+    .join("\n\n");
+}
+
+function saveTXT(
+  filename: string,
+  notes: Note[],
+  calendar: AtlasCalendar,
+  opts: ExportOptions
+) {
+  const text = buildExportText(notes, calendar, opts);
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -321,16 +393,20 @@ function downloadTXT(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
-async function downloadDOCX(filename: string, text: string) {
+async function saveDOCX(
+  filename: string,
+  notes: Note[],
+  calendar: AtlasCalendar,
+  opts: ExportOptions
+) {
+  const text = buildExportText(notes, calendar, opts);
   const doc = new Document({
     sections: [
       {
         properties: {},
-        children: text.split("\n").map(line =>
-          new Paragraph({ children: [new TextRun(line)] })
-        )
-      }
-    ]
+        children: text.split("\n").map(line => new Paragraph({ children: [new TextRun(line)] })),
+      },
+    ],
   });
   const blob = await Packer.toBlob(doc);
   const url = URL.createObjectURL(blob);
@@ -345,29 +421,100 @@ async function downloadDOCX(filename: string, text: string) {
 
 function ExportMenu(){
   const { notes, calendar } = useTL();
+  const [open, setOpen] = useState(false);
 
-  const exportText = () => {
-    return notes
-      .sort(compareDates)
-      .map(n => `[${n.level}] ${n.title}\n${formatAtlasDate(n.date, calendar, n.level)}\n${n.description || ""}`)
-      .join("\n\n");
-  };
+  // Opções com os padrões que você pediu
+  const [includeDescription, setIncludeDescription] = useState(true);
+  const [includeTags, setIncludeTags] = useState(false);
+  const [groupBy, setGroupBy] = useState<GroupLevel>("NONE");
 
-  const doExportTXT = () => {
-    const content = exportText();
-    downloadTXT("atlas_timeline.txt", content || "(sem eventos)");
-  };
-
-  const doExportDOCX = () => {
-    const content = exportText();
-    downloadDOCX("atlas_timeline.docx", content || "(sem eventos)");
+  const opts: ExportOptions = {
+    includeDescription,
+    includeTags,
+    includeImages: false,
+    groupBy,
   };
 
   return (
-    <div className="flex gap-2">
-      <Button variant="outline" onClick={doExportTXT}><Download size={16}/>TXT</Button>
-      <Button variant="outline" onClick={doExportDOCX}><Download size={16}/>DOCX</Button>
-    </div>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" className="flex items-center gap-2">
+          <Download size={16}/> Exportar
+        </Button>
+      </DialogTrigger>
+
+      <DialogContent className="w-[520px]">
+        <DialogHeader>
+          <DialogTitle>Exportar timeline</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4 text-sm">
+          <div>
+            <div className="font-medium mb-1">Formato padrão de cada nota:</div>
+            <pre className="rounded bg-muted p-3 whitespace-pre leading-5 text-xs">
+{`4 a.U.
+Uyay
+Ayla`}
+            </pre>
+            <div className="text-xs text-muted-foreground">
+              (Data • Título • Descrição; “a.U.” aparece só para anos antes da união)
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={includeDescription}
+                onChange={(e)=>setIncludeDescription(e.target.checked)}
+              />
+              Incluir descrição
+            </label>
+
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={includeTags}
+                onChange={(e)=>setIncludeTags(e.target.checked)}
+              />
+              Incluir tags
+            </label>
+          </div>
+
+          <div>
+            <div className="font-medium mb-1">Agrupar por:</div>
+            <select
+              className="w-full border rounded p-2"
+              value={groupBy}
+              onChange={(e)=>setGroupBy(e.target.value as GroupLevel)}
+            >
+              <option value="NONE">Sem agrupamento</option>
+              <option value="ERA">Era</option>
+              <option value="MILLENNIUM">Milênio</option>
+              <option value="CENTURY">Século</option>
+              <option value="DECADE">Década</option>
+            </select>
+            <div className="text-xs text-muted-foreground mt-1">
+              (Se escolher um agrupamento, o nome do grupo aparece como cabeçalho antes das notas)
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => saveTXT("atlas_timeline.txt", notes, calendar, opts)}
+            >
+              TXT
+            </Button>
+            <Button
+              onClick={() => saveDOCX("atlas_timeline.docx", notes, calendar, opts)}
+            >
+              DOCX
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -379,6 +526,7 @@ function AddNoteDialog(){
   const [date, setDate] = useState<AtlasDate>({});
   const [images, setImages] = useState<string[]>([]);
   const [weight, setWeight] = useState<number>(1);
+  const [tags, setTags] = useState<string>(""); // NOVO
   const { addNote } = useTL();
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>){
@@ -391,8 +539,10 @@ function AddNoteDialog(){
   }
 
   function save(){
-    addNote({ title, description, level, date, images, weight, pinned: false });
-    setOpen(false); setTitle(""); setDescription(""); setDate({}); setImages([]); setWeight(1); setLevel("YEAR");
+    const tagsArr = tags.split(",").map(t=>t.trim()).filter(Boolean);
+    addNote({ title, description, level, date, images, weight, pinned: false, tags: tagsArr });
+    setOpen(false);
+    setTitle(""); setDescription(""); setDate({}); setImages([]); setWeight(1); setLevel("YEAR"); setTags("");
   }
 
   return (
@@ -400,7 +550,7 @@ function AddNoteDialog(){
       <DialogTrigger asChild>
         <Button variant="default" className="flex items-center gap-2"><Plus size={16}/>Adicionar</Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Nova nota / acontecimento</DialogTitle>
         </DialogHeader>
@@ -411,6 +561,13 @@ function AddNoteDialog(){
           <div className="col-span-2">
             <Textarea placeholder="Descrição (opcional)" value={description} onChange={e=>setDescription(e.target.value)} />
           </div>
+          
+          {/* Campo de Tags */}
+          <div className="col-span-2">
+            <label className="text-xs text-muted-foreground">Tags (separadas por vírgula)</label>
+            <Input placeholder="Ex: Humanos, Guerra, Religião" value={tags} onChange={e=>setTags(e.target.value)} />
+          </div>
+
           <div>
             <label className="text-xs text-muted-foreground">Granularidade</label>
             <select value={level} onChange={e=>setLevel(e.target.value as Level)} className="w-full border rounded p-2">
@@ -598,43 +755,34 @@ function SettingsDialog(){
   );
 }
 
-function compareDates(a: Note, b: Note){
-  // AU vem antes de DU
-  const eraOrd = (d: AtlasDate) => (d.relativeEra === "AU" ? -1 : 1);
+function compareDates(a: Note, b: Note) {
+  const getNumericYear = (n: Note) => {
+    if (!n.date.year) return 0;
+    if (n.date.relativeEra === "AU") {
+      // antes da União → trata como negativo
+      return -n.date.year;
+    }
+    return n.date.year;
+  };
 
-  const va = [
-    eraOrd(a.date),
-    a.date.millennium ?? 0,
-    a.date.century ?? 0,
-    a.date.decade ?? 0,
-    a.date.year ?? 0,
-    a.date.month ?? 0,
-    a.date.day ?? 0,
-  ];
-  const vb = [
-    eraOrd(b.date),
-    b.date.millennium ?? 0,
-    b.date.century ?? 0,
-    b.date.decade ?? 0,
-    b.date.year ?? 0,
-    b.date.month ?? 0,
-    b.date.day ?? 0,
-  ];
-
-  for (let i = 0; i < va.length; i++){
-    if (va[i] !== vb[i]) return va[i] - vb[i];
-  }
-  return 0;
+  return getNumericYear(a) - getNumericYear(b);
 }
 
+
+// ------------------ Filtering integration ------------------
 function useGroupedNotes(){
-  const { notes, zoom, search } = useTL();
+  const { notes, zoom, search, filters } = useTL();
   return useMemo(()=>{
-    const filtered = search.trim() ? notes.filter(n =>
-      n.title.toLowerCase().includes(search.toLowerCase()) ||
-      (n.description||"").toLowerCase().includes(search.toLowerCase()) ||
-      formatAtlasDate(n.date, defaultCalendar, n.level).toLowerCase().includes(search.toLowerCase())
-    ) : notes;
+    let filtered = notes;
+    if(search.trim()){
+      filtered = filtered.filter(n =>
+        n.title.toLowerCase().includes(search.toLowerCase()) ||
+        (n.description||"").toLowerCase().includes(search.toLowerCase())
+      );
+    }
+    if(filters.length){
+      filtered = filtered.filter(n=> (n.tags||[]).some(t=>filters.includes(t)));
+    }
 
     function buildKey(n: Note, level: Level){
       const d = n.date;
@@ -645,14 +793,13 @@ function useGroupedNotes(){
       return `${d.era||"?"}::${d.millennium??"?"}::${d.century??"?"}::${d.decade??"?"}::${d.year??"?"}`;
     }
 
-    // topo dos grupos (importante: no zoom DECADE, agrupar por CENTURY!)
     const groups = new Map<string, Note[]>();
     for(const n of filtered){
       let key: string;
       if(zoom === "ERA")         key = buildKey(n, "ERA");
       else if(zoom === "MILLENNIUM") key = buildKey(n, "MILLENNIUM");
       else if(zoom === "CENTURY")    key = buildKey(n, "CENTURY");
-      else if(zoom === "DECADE")     key = buildKey(n, "CENTURY"); // <— aqui é o pulo do gato
+      else if(zoom === "DECADE")     key = buildKey(n, "CENTURY");
       else                            key = buildKey(n, "YEAR");
       if(!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(n);
@@ -665,13 +812,15 @@ function useGroupedNotes(){
     });
 
     return entries.map(([key, items])=> ({ key, items: items.sort(compareDates) }));
-  }, [notes, zoom, search]);
+  }, [notes, zoom, search, filters]);
 }
 
 function Timeline(){
-  const { calendar, zoom, load } = useTL();
+  const { calendar, zoom, load, layout } = useTL();
   const groups = useGroupedNotes();
   useEffect(()=>{ load(); }, []);
+
+  const grad = "linear-gradient(to bottom, #22c55e, #fb923c, #facc15, #a855f7, #3b82f6)";
 
   return (
     <div className="max-w-6xl mx-auto grid grid-cols-12 gap-6 py-6">
@@ -679,7 +828,7 @@ function Timeline(){
       <div className="col-span-12">
         <Card>
           <CardContent className="py-3">
-            <div className="flex justify-center items-center gap-6 text-sm"> {/* centralizado */}
+            <div className="flex justify-center items-center gap-6 text-sm">
               {LEVELS.map(l => (
                 <div key={l} className="flex items-center gap-2">
                   {levelStyles[l].marker({ size: 14 })}
@@ -691,18 +840,21 @@ function Timeline(){
         </Card>
       </div>
 
-      {/* Vertical line */}
-      <div className="col-span-12 relative min-h-[70vh]">
-        <div className="absolute left-1/2 -translate-x-1/2 top-0 bottom-0 w-2 rounded-full"
-             style={{ background: "linear-gradient(to bottom, #22c55e, #fb923c, #facc15, #a855f7, #3b82f6)" }} />
-
-        <div className="relative">
-          {groups.map((g, i) => (
-  <GroupRow2 key={g.key} index={i} items={g.items} level={zoom} />
-))}
-
+      {/* Linha + grupos (vertical ou horizontal) */}
+      {layout === "HORIZONTAL" ? (
+        <div className="col-span-12">
+          <HorizontalTimeline groups={groups} level={zoom} />
         </div>
-      </div>
+      ) : (
+        <div className="col-span-12 relative min-h-[70vh]">
+          <div className="absolute left-1/2 -translate-x-1/2 top-0 bottom-0 w-2 rounded-full" style={{ background: grad }} />
+          <div className="relative">
+            {groups.map((g, i) => (
+              <GroupRow2 key={g.key} index={i} items={g.items} level={zoom} layout={layout} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Pinned */}
       <PinnedPanel />
@@ -788,7 +940,10 @@ function NestedGroups({ rootLevel, items }:{ rootLevel: Level, items: Note[] }){
   return renderLevel(chain, items);
 }
 
-function GroupRow2({ index, items, level }:{ index:number, items: Note[], level: Level }){
+function GroupRow2(
+  { index, items, level, layout }:
+  { index:number, items: Note[], level: Level, layout: LayoutMode }
+){
   const { calendar } = useTL();
   const totalWeight = items.reduce((s, n) => s + (n.weight||1), 0);
   const size = Math.min(42, 8 + totalWeight * 4);
@@ -796,13 +951,15 @@ function GroupRow2({ index, items, level }:{ index:number, items: Note[], level:
 
   // Cabeçalho: no zoom DECADE, mostramos o SÉCULO; nos demais, o próprio zoom
   const headerLevel: Level = (level === "DECADE") ? "CENTURY" : level;
-  const label = (()=> {
-    const sample = items[0];
-    return formatAtlasDate(sample.date, calendar, headerLevel);
-  })();
+  const sample = items[0];
+  const label = formatAtlasDate(sample.date, calendar, headerLevel);
 
-  // alternar entre esquerda e direita com base no índice
-  const alignRight = index % 2 === 0;
+  // Decide lado de acordo com o layout
+  const align =
+    layout === "LEFT" ? "LEFT" :
+    layout === "RIGHT" ? "RIGHT" :
+    (index % 2 === 0 ? "RIGHT" : "LEFT"); // alternado
+  const alignRight = align === "RIGHT";
 
   return (
     <div className="relative flex items-center py-3">
@@ -865,12 +1022,69 @@ function GroupRow2({ index, items, level }:{ index:number, items: Note[], level:
   );
 }
 
+function HorizontalTimeline({
+  groups,
+  level
+}:{
+  groups: { key:string; items: Note[] }[];
+  level: Level;
+}){
+  const grad = "linear-gradient(to right, #22c55e, #fb923c, #facc15, #a855f7, #3b82f6)";
+  return (
+    <div className="relative py-10">
+      {/* linha horizontal */}
+      <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-2 rounded-full" style={{ background: grad }} />
+
+      <div className="flex gap-6 overflow-x-auto pb-8">
+        {groups.map((g, i) => (
+          <HorizontalItem key={g.key} index={i} items={g.items} level={level} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HorizontalItem({ index, items, level }:{
+  index:number; items:Note[]; level:Level;
+}){
+  const { calendar } = useTL();
+  const [open, setOpen] = useState(false);
+  const headerLevel: Level = (level === "DECADE") ? "CENTURY" : level;
+  const label = formatAtlasDate(items[0].date, calendar, headerLevel);
+  const up = index % 2 === 0; // alterna acima/abaixo da linha
+
+  return (
+    <div className={`relative min-w-[320px] ${up ? "pb-12" : "pt-12"}`}>
+      <div className={`absolute left-1/2 -translate-x-1/2 ${up ? "bottom-0" : "top-0"}`}>
+        {levelStyles[level].marker({ size: 22 })}
+      </div>
+      <Card className="w-[320px]">
+        <CardHeader className="py-3 cursor-pointer" onClick={()=>setOpen(o=>!o)}>
+          <div className="flex items-center justify-center w-full relative">
+            <CardTitle className="text-base text-center">{label || "(período)"}</CardTitle>
+            <div className="absolute right-0">
+              <Button size="icon" variant="ghost">
+                {open ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        {open && (
+          <CardContent>
+            <NestedGroups rootLevel={level} items={items}/>
+          </CardContent>
+        )}
+      </Card>
+    </div>
+  );
+}
 
 function AggregatedNotes({ items }:{ items: Note[] }){
   const { calendar, togglePin, removeNote, notes } = useTL();
   const [expandedYears, setExpandedYears] = useState<Record<string, boolean>>({});
   const [editingNote, setEditingNote] = useState<Note|null>(null);
   const [viewingNote, setViewingNote] = useState<Note|null>(null);
+  const [editTags, setEditTags] = useState<string>("");
 
   function saveEdit(){
     if(editingNote){
@@ -885,15 +1099,21 @@ function AggregatedNotes({ items }:{ items: Note[] }){
         relativeEra: editingNote.date.relativeEra ?? "DU"
       };
 
-      const updated = { ...editingNote, date: normalizedDate };
+      const updated = { ...editingNote, date: normalizedDate, tags: editTags.split(",").map(t=>t.trim()).filter(Boolean) };
       const updatedNotes = notes.map(n => n.id === updated.id ? updated : n);
       localStorage.setItem("atlas_timeline_notes", JSON.stringify(updatedNotes));
       window.dispatchEvent(new Event("storage"));
       setEditingNote(null);
+      setEditTags("");
     }
   }
 
   const byYear = useMemo(() => {
+    // Se já estamos no zoom YEAR, retorna as notas diretamente
+    if (items.length && items[0].level === "YEAR") {
+      return [["direct", items]] as [string, Note[]][];
+    }
+
     const m = new Map<string, Note[]>();
     for (const n of items) {
       const k = `${n.date.relativeEra ?? "DU"}::${n.date.year ?? "?"}`;
@@ -907,92 +1127,143 @@ function AggregatedNotes({ items }:{ items: Note[] }){
     <div className="space-y-2">
       {byYear.map(([year, notes]) => (
         <div key={year} className="border rounded-xl p-2">
-          <div className="flex items-center justify-center relative cursor-pointer" onClick={()=>setExpandedYears(s=>({ ...s, [year]: !s[year] }))}>
-            <div className="font-medium text-center w-full">
-  {formatAtlasDate(notes[0].date, calendar, "YEAR")}
-</div>
-            <div className="absolute right-0">
-              <Button size="sm" variant="ghost">{expandedYears[year] ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}</Button>
-            </div>
-          </div>
-          {expandedYears[year] && (
+          {year === "direct" ? (
+            // Renderização direta no nível de YEAR
             <div className="mt-2 grid gap-2">
-                        {notes.sort((a,b)=> (a.weight||1)-(b.weight||1)).map(n => (
-            <div key={n.id} className="rounded-lg border p-2">
-              {editingNote?.id === n.id ? (
-                  <div className="space-y-2">
-                    <Input value={editingNote.title} onChange={e=>setEditingNote({...editingNote, title:e.target.value})} />
-                    <Textarea value={editingNote.description} onChange={e=>setEditingNote({...editingNote, description:e.target.value})} />
+              {notes.sort((a,b)=> (a.weight||1)-(b.weight||1)).map(n => (
+                <div key={n.id} className="rounded-lg border p-2">
+                  {editingNote?.id === n.id ? (
+                    <div className="space-y-2">
+                      <Input value={editingNote.title} onChange={e=>setEditingNote({...editingNote, title:e.target.value})} />
+                      <Textarea value={editingNote.description} onChange={e=>setEditingNote({...editingNote, description:e.target.value})} />
 
-    {/* Granularidade */}
-    <div>
-      <label className="text-xs text-muted-foreground">Granularidade</label>
-      <select value={editingNote.level} onChange={e=>setEditingNote({...editingNote, level:e.target.value as Level})} className="w-full border rounded p-2">
-        {LEVELS.map(l=> <option key={l} value={l}>{l}</option>)}
-      </select>
-    </div>
+                      {/* Granularidade */}
+                      <div>
+                        <label className="text-xs text-muted-foreground">Granularidade</label>
+                        <select value={editingNote.level} onChange={e=>setEditingNote({...editingNote, level:e.target.value as Level})} className="w-full border rounded p-2">
+                          {LEVELS.map(l=> <option key={l} value={l}>{l}</option>)}
+                        </select>
+                      </div>
 
-    {/* Peso */}
-    <div>
-      <label className="text-xs text-muted-foreground">Peso</label>
-      <Input type="number" value={editingNote.weight||1} onChange={e=>setEditingNote({...editingNote, weight:Number(e.target.value)||1})} />
-    </div>
+                      {/* Peso */}
+                      <div>
+                        <label className="text-xs text-muted-foreground">Peso</label>
+                        <Input type="number" value={editingNote.weight||1} onChange={e=>setEditingNote({...editingNote, weight:Number(e.target.value)||1})} />
+                      </div>
 
-    {/* Datas */}
-    <DateEditor date={editingNote.date} onChange={(d)=>setEditingNote({...editingNote, date:d})} />
+                      {/* Datas */}
+                      <DateEditor date={editingNote.date} onChange={(d)=>setEditingNote({...editingNote, date:d})} />
 
-    {/* Imagens */}
-                  <div>
-    <label className="text-xs text-muted-foreground">Imagens</label>
-    <Input type="file" accept="image/*" multiple onChange={(e)=>{
-      const files = e.target.files; if(!files) return;
-      Array.from(files).forEach(file=>{
-        const reader = new FileReader();
-        reader.onload = () => {
-          setEditingNote(prev => prev ? {...prev, images:[...(prev.images||[]), reader.result as string]} : prev);
-        };
-        reader.readAsDataURL(file);
-      });
-    }} />
-    {!!(editingNote.images && editingNote.images.length) && (
-      <div className="mt-2 grid grid-cols-4 gap-2">
-        {editingNote.images.map((src,i)=> (
-          <ImagePreview key={i} src={src} />
-        ))}
-      </div>
-    )}
-  </div>
+                      {/* Tags */}
+                      <div>
+                        <label className="text-xs text-muted-foreground">Tags (separadas por vírgula)</label>
+                        <Input
+                          value={editTags}
+                          onChange={e => setEditTags(e.target.value)}
+                          placeholder="Ex: Humanos, Guerra, Religião"
+                        />
+                      </div>
 
-    <div className="flex gap-2 justify-end">
-      <Button variant="outline" onClick={()=>setEditingNote(null)}>Cancelar</Button>
-      <Button onClick={saveEdit}>Salvar</Button>
-    </div>
-  </div>
-) : (
+                      {/* Imagens */}
+                      <div>
+                        <label className="text-xs text-muted-foreground">Imagens</label>
+                        <Input type="file" accept="image/*" multiple onChange={(e)=>{
+                          const files = e.target.files; if(!files) return;
+                          Array.from(files).forEach(file=>{
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                              setEditingNote(prev => prev ? {...prev, images:[...(prev.images||[]), reader.result as string]} : prev);
+                            };
+                            reader.readAsDataURL(file);
+                          });
+                        }} />
+                        {!!(editingNote.images && editingNote.images.length) && (
+                          <div className="mt-2 grid grid-cols-4 gap-2">
+                            {editingNote.images.map((src,i)=> (
+                              <ImagePreview key={i} src={src} />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex gap-2 justify-end">
+                        <Button variant="outline" onClick={()=>setEditingNote(null)}>Cancelar</Button>
+                        <Button onClick={saveEdit}>Salvar</Button>
+                      </div>
+                    </div>
+                  ) : (
                     <>
                       <div className="flex items-center justify-between">
                         <div className="font-semibold">{n.title}</div>
                         <div className="flex items-center gap-1">
                           <Button size="icon" variant="ghost" onClick={()=>togglePin(n.id)} title={n.pinned?"Desafixar":"Fixar"}>
-                            {n.pinned ? <PinOff size={16}/> : <Pin size={16}/>}
+                            {n.pinned ? <PinOff size={16}/> : <Pin size={16}/>} 
                           </Button>
-                          <Button size="icon" variant="ghost" onClick={()=>setEditingNote(n)} title="Editar"><Save size={16}/></Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={()=>{
+                              setEditingNote(n);
+                              setEditTags((n.tags || []).join(", "));
+                            }}
+                            title="Editar"
+                          >
+                            <Save size={16}/>
+                          </Button>
                           <Button size="icon" variant="ghost" onClick={()=>removeNote(n.id)} title="Excluir"><X size={16}/></Button>
                           <Button size="icon" variant="ghost" onClick={()=>setViewingNote(n)} title="Ver detalhes"><Eye size={16}/></Button>
                         </div>
                       </div>
                       {n.description && <div className="text-sm text-muted-foreground mt-1 whitespace-pre-wrap">{n.description}</div>}
-                  {!!(n.images && n.images.length) && (
-                    <div className="mt-2 grid grid-cols-4 gap-2">
-                      {n.images!.map((src,i)=> <ImagePreview key={i} src={src} />)}
-                    </div>
-                  )}
+                      {!!(n.images && n.images.length) && (
+                        <div className="mt-2 grid grid-cols-4 gap-2">
+                          {n.images!.map((src,i)=> <ImagePreview key={i} src={src} />)}
+                        </div>
+                      )}
                       <div className="text-xs mt-2 text-muted-foreground">{formatAtlasDate(n.date, calendar, n.level)}</div>
                     </>
                   )}
                 </div>
               ))}
             </div>
+          ) : (
+            // Renderização normal (agrupada por ano)
+            <>
+              <div className="flex items-center justify-center relative cursor-pointer" onClick={()=>setExpandedYears(s=>({ ...s, [year]: !s[year] }))}>
+                <div className="font-medium text-center w-full">
+                  {formatAtlasDate(notes[0].date, calendar, "YEAR")}
+                </div>
+                <div className="absolute right-0">
+                  <Button size="sm" variant="ghost">{expandedYears[year] ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}</Button>
+                </div>
+              </div>
+              {expandedYears[year] && (
+                <div className="mt-2 grid gap-2">
+                  {notes.sort((a,b)=> (a.weight||1)-(b.weight||1)).map(n => (
+                    <div key={n.id} className="rounded-lg border p-2">
+                      <div className="flex items-center justify-between">
+                        <div className="font-semibold">{n.title}</div>
+                        <div className="flex items-center gap-1">
+                          <Button size="icon" variant="ghost" onClick={()=>togglePin(n.id)} title={n.pinned?"Desafixar":"Fixar"}>
+                            {n.pinned ? <PinOff size={16}/> : <Pin size={16}/>} 
+                          </Button>
+                          <Button size="icon" variant="ghost" onClick={()=>{ setEditingNote(n); setEditTags((n.tags || []).join(", ")); }} title="Editar"><Save size={16}/></Button>
+                          <Button size="icon" variant="ghost" onClick={()=>removeNote(n.id)} title="Excluir"><X size={16}/></Button>
+                          <Button size="icon" variant="ghost" onClick={()=>setViewingNote(n)} title="Ver detalhes"><Eye size={16}/></Button>
+                        </div>
+                      </div>
+                      {n.description && <div className="text-sm text-muted-foreground mt-1 whitespace-pre-wrap">{n.description}</div>}
+                      {!!(n.images && n.images.length) && (
+                        <div className="mt-2 grid grid-cols-4 gap-2">
+                          {n.images!.map((src,i)=> <ImagePreview key={i} src={src} />)}
+                        </div>
+                      )}
+                      <div className="text-xs mt-2 text-muted-foreground">{formatAtlasDate(n.date, calendar, n.level)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
       ))}
@@ -1042,10 +1313,27 @@ function AggregatedNotes({ items }:{ items: Note[] }){
                   )}
                 </div>
               </div>
-            </div>
-              <div className="flex justify-end gap-3 mt-8">
-                <Button onClick={()=>setViewingNote(null)} className="bg-gray-700 text-white hover:bg-gray-600">Fechar</Button>
+              <div className="mt-4">
+                <h3 className="text-sm uppercase tracking-wider text-gray-400 mb-2">Tags</h3>
+                <div className="flex flex-wrap gap-3 text-sm">
+                  {viewingNote.tags && viewingNote.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {viewingNote.tags.map((tag, i) => (
+                        <span
+                          key={i}
+                          className="px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
+            </div>
+            <div className="flex justify-end gap-3 mt-8">
+              <Button onClick={()=>setViewingNote(null)} className="bg-gray-700 text-white hover:bg-gray-600">Fechar</Button>
+            </div>
           </DialogContent>
         </Dialog>
       )}
@@ -1083,16 +1371,6 @@ function PinnedPanel(){
       </Card>
     </div>
   );
-}
-
-// Utility: convert hex to rgb string
-function hexToRgb(hex: string){
-  const c = hex.replace('#','');
-  const bigint = parseInt(c, 16);
-  const r = (bigint >> 16) & 255;
-  const g = (bigint >> 8) & 255;
-  const b = bigint & 255;
-  return `${r}, ${g}, ${b}`;
 }
 
 export default function App(){
