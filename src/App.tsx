@@ -269,7 +269,7 @@ function Toolbar() {
           Linha do Tempo de Atlas
         </h1>
 
-        <div className="w-full flex items-center gap-2">
+        <div className="w-full flex flex-wrap items-center gap-2 justify-center">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" className="flex items-center gap-2"><ZoomOut size={16}/>Zoom: {zoom}</Button>
@@ -302,6 +302,41 @@ function Toolbar() {
           <AddNoteDialog />
 
           <SettingsDialog />
+
+          <Button
+            variant="outline"
+            onClick={() => {
+              const notes = JSON.parse(localStorage.getItem("atlas_timeline_notes") || "[]");
+              downloadJSON("timeline.json", notes);
+            }}
+          >
+            Exportar JSON
+          </Button>
+
+          <Button
+            variant="outline"
+            onClick={() => {
+              const input = document.createElement("input");
+              input.type = "file";
+              input.accept = "application/json";
+              input.onchange = (e: any) => importJSON(e);
+              input.click();
+            }}
+          >
+            Importar JSON
+          </Button>
+
+          <Button
+            variant="destructive"
+            onClick={() => {
+              if (confirm("Tem certeza que deseja apagar toda a timeline? Essa ação não pode ser desfeita.")) {
+                localStorage.removeItem("atlas_timeline_notes");
+                window.location.reload(); // recarrega a página para aplicar
+              }
+            }}
+          >
+            Zerar Timeline
+          </Button>
 
           <ExportMenu />
 
@@ -419,6 +454,34 @@ async function saveDOCX(
   URL.revokeObjectURL(url);
 }
 
+function downloadJSON(filename: string, data: any) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function importJSON(e: React.ChangeEvent<HTMLInputElement>) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result as string);
+      localStorage.setItem("atlas_timeline_notes", JSON.stringify(data));
+      window.location.reload(); // recarrega o app para aplicar
+    } catch (err) {
+      alert("Arquivo inválido");
+    }
+  };
+  reader.readAsText(file);
+}
+
 function ExportMenu(){
   const { notes, calendar } = useTL();
   const [open, setOpen] = useState(false);
@@ -453,8 +516,8 @@ function ExportMenu(){
             <div className="font-medium mb-1">Formato padrão de cada nota:</div>
             <pre className="rounded bg-muted p-3 whitespace-pre leading-5 text-xs">
 {`4 a.U.
-Uyay
-Ayla`}
+Título
+Descrição`}
             </pre>
             <div className="text-xs text-muted-foreground">
               (Data • Título • Descrição; “a.U.” aparece só para anos antes da união)
@@ -1105,6 +1168,8 @@ function AggregatedNotes({ items }:{ items: Note[] }){
       window.dispatchEvent(new Event("storage"));
       setEditingNote(null);
       setEditTags("");
+
+      window.location.reload();  
     }
   }
 
