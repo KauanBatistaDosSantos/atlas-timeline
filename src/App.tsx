@@ -30,7 +30,7 @@ type AtlasDate = {
   year?: number;
   month?: number;
   day?: number;
-  relativeEra?: "AU" | "DU"; // novo campo
+  relativeEra?: "AU" | "DU" | "ZERO";
 };
 
 type Note = {
@@ -211,13 +211,25 @@ function formatAtlasDate(d: AtlasDate, cal: AtlasCalendar, level: Level) {
     if (d.decade != null) parts.push(`Década de ${d.decade}`);
   } else if (level === "YEAR") {
     if (d.year != null) {
-      // Apenas anos antes da união exibem sufixo a.U.
-      const suffix = d.relativeEra === "AU" ? " a.U." : "";
-      parts.push(`${d.year}${suffix}`);
+      let formatted = String(d.year);
+
+      // só formata com separador de milhar se for >= 10000
+      if (Math.abs(d.year) >= 10000) {
+        formatted = d.year.toLocaleString("pt-BR");
+      }
+
+      // ano 0 é caso especial
+      if (d.relativeEra === "ZERO" || d.year === 0) {
+        parts.push("0");
+      } else {
+        const suffix = d.relativeEra === "AU" ? " a.U." : "";
+        parts.push(`${formatted}${suffix}`);
+      }
     }
   }
   return parts.join(" • ");
 }
+
 
 function toRoman(num:number): string {
   if(num <= 0) return String(num);
@@ -735,11 +747,12 @@ function DateEditor({ date, onChange }:{ date: AtlasDate, onChange:(d:AtlasDate)
   <label className="text-xs font-semibold text-red-600">Referência</label>
   <select
     value={date.relativeEra ?? "DU"}
-    onChange={e=>update("relativeEra", e.target.value as "AU" | "DU")}
+    onChange={e=>update("relativeEra", e.target.value as "AU" | "DU" | "ZERO")}
     className="w-full border rounded p-2 bg-gradient-to-r from-red-50 to-red-100 focus:outline-none focus:ring-2 focus:ring-red-400"
   >
     <option value="DU">Depois da União (DU)</option>
     <option value="AU">Antes da União (AU)</option>
+    <option value="ZERO">Ano 0</option>
   </select>
 </div>
       <div className="col-span-2">
